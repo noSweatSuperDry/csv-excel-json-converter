@@ -1,76 +1,88 @@
-//=======Initialize express app=======//
 const express = require("express");
 const app = express();
-
-const fs = require("fs");
-const csvtojson = require("csvtojson");
-
-//Importing cors for cross origin requests
 const cors = require("cors");
+const multer = require("multer");
+const xlsx = require("xlsx");
+const path = require("path");
+const fs = require("fs");
+
 app.use(cors());
 
-// Uploaded file will be saved in uploads folder/Middleware
-const multer = require("multer");
-const upload = multer({ dest: "output/" });
+// Multer configuration for handling file uploads
+const storage = multer.memoryStorage();
+const upload = multer({ storage: storage });
 
-//import xlsx
-const xlsx = require("xlsx");
-//
+// Recursive function to flatten nested JSON object
+function flattenObject(obj, parentKey = "") {
+  return Object.keys(obj).reduce((acc, key) => {
+    const propName = parentKey ? `${parentKey}_${key}` : key;
+    if (typeof obj[key] === "object" && obj[key] !== null && !Array.isArray(obj[key])) {
+      Object.assign(acc, flattenObject(obj[key], propName));
+    } else {
+      acc[propName] = obj[key];
+    }
+    return acc;
+  }, {});
+}
+
 app.post("/source", upload.single("file"), async (req, res) => {
-  // when req. is received, the file is uploaded and the file is converted to JSON and then to Excel
   try {
-    //If no file found
     if (!req.file) {
-      return res.status(400).send("No files were uploaded.");
+      return res.status(400).send("No file uploaded.");
     }
-    //If a file is found
-    try {
-      let data;
-      // Check the file extension to determine the file format
-      if (req.file.originalname.endsWith(".csv")) {
-        // Convert CSV file to JSON
-        data = await csvtojson().fromFile(req.file.path);
-      } else if (req.file.originalname.endsWith(".json")) {
-        // Read JSON data from the file
-        data = JSON.parse(fs.readFileSync(req.file.path, "utf-8"));
-      } else {
-        // Unsupported file format
-        return res.status(400).json({ error: "Unsupported file format" });
-      }
 
-      // Create a new Excel workbook
-      const wb = xlsx.utils.book_new();
-      // Convert JSON data to Excel sheet
-      const ws = xlsx.utils.json_to_sheet(data);
-      // Append the sheet to the workbook
-      xlsx.utils.book_append_sheet(wb, ws, "Sheet1");
+    let data;
+    if (req.file.originalname.endsWith(".json")) {
+      data = JSON.parse(req.file.buffer.toString());
+    } else {
+      return res.status(400).json({ error: "Unsupported file format" });
+    }
 
-      // Define the path for the converted Excel file
-      const excelFilePath = "converted.xlsx";
-      // Write the workbook to an Excel file
-      xlsx.writeFile(wb, excelFilePath);
-
-      // Send the Excel file as a downloadable attachment
-      res.download(excelFilePath, (err) => {
-        if (err) {
-          console.error("Error sending Excel file:", err);
-          res.status(500).json({ error: "Internal server error" });
-        }
-        // Delete the temporary Excel file after sending
-        fs.unlinkSync(excelFilePath);
+    // Flatten the nested JSON data
+    const flattenedData = [];
+    data.forEach((item) => {
+      const flattenedItem = flattenObject(item);
+      item.shots.forEach((shot, index) => {
+        const shotKeys = Object.keys(shot).map((key) => `shots_${index}_${key}`);
+        shotKeys.forEach((shotKey) => {
+          flattenedItem[shotKey] = shot[shotKey.substring(`shots_${index}_`.length)];
+        });
       });
-    } catch (error) {
-      console.error("Error converting file to Excel:", error);
-      res.status(500).json({ error: "Internal server error" });
-    }
+      flattenedData.push(flattenedItem);
+    });
+
+    // Extract unique keys from flattened data
+    const keys = flattenedData.reduce((acc, item) => {
+      Object.keys(item).forEach((key) => {
+        if (!acc.includes(key)) {
+          acc.push(key);
+        }
+      });
+      return acc;
+    }, []);
+
+    const wb = xlsx.utils.book_new();
+    const ws = xlsx.utils.json_to_sheet(flattenedData, { header: keys });
+    xlsx.utils.book_append_sheet(wb, ws, "Sheet1");
+
+    const excelFilePath = path.join(__dirname,"converted.xlsx");
+    xlsx.writeFile(wb, excelFilePath);
+
+    res.sendFile(excelFilePath, (err) => {
+      if (err) {
+        console.error("Error sending Excel file:", err);
+        res.status(500).json({ error: "Internal server error" });
+      }
+      // Cleanup: Delete the temporary Excel file
+      // fs.unlinkSync(excelFilePath);
+    });
   } catch (error) {
     console.error("Error converting file to Excel:", error);
-    res.status(500).json({ error: "Request can not be fullfilled" });
+    res.status(500).json({ error: "Internal server error" });
   }
 });
 
-require("dotenv").config();
-
-app.listen(process.env.PORT, () => {
-  console.log(`Server is running on port ${process.env.PORT}`);
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Server is running on port ${PORT}`);
 });
