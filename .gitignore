@@ -1,2 +1,6 @@
 node_modules/*
 .DS_Store
+
+# Usually .env file is used to store environment variables and its not required to be committed.
+# If you have a .env file, add it to .gitignore 
+# I am adding .env.example file to the repository which will have all the environment variables required by the application.
